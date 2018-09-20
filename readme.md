@@ -6,8 +6,11 @@ potentially unintentionally resource intensive.
 Currently prestowatcher only supports alerting if a given source used in a query is scanning over more
 than a configurable amount of partitions.
 
+### Whitelisting Queries
+Simply add `-- sqlbandit:off` somewhere in your query and it'll ignore this query.
+
 ## Future
-Future features might include checking for missing filters, whitelisting of queries, and more.
+Future features might include checking for missing filters and query runtimes.
 
 ## Building
 ```
@@ -26,7 +29,7 @@ Application Options:
   -u, --url=      presto URL (including scheme and port) [$PRESTO_URL]
   -m, --maxpart=  Alert when Presto queries scan more than X partitions (default: 30) [$MAX_PARTITIONS]
   -i, --interval= Update interval in seconds (default: 20) [$UPDATE_INTERVAL]
-  -t, --token=    Slack Webhook URL [$SLACK_URL]
+  -s, --slack=    Slack Webhook URL [$SLACK_URL]
   -p, --port=     Health check HTTP server port (default: 8080) [$PORT]
 
 Help Options:

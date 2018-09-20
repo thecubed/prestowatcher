@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/bluele/gcache"
+	"strings"
 )
 
 /*
@@ -33,7 +34,7 @@ var opts struct {
 	PrestoURL string `short:"u" long:"url" description:"presto URL (including scheme and port)" default:"" env:"PRESTO_URL"`
 	MaxPartitions string `short:"m" long:"maxpart" description:"Alert when Presto queries scan more than X partitions" default:"30" env:"MAX_PARTITIONS"`
 	UpdateInterval string `short:"i" long:"interval" description:"Update interval in seconds" default:"20" env:"UPDATE_INTERVAL"`
-	SlackURL string `short:"t" long:"token" description:"Slack Webhook URL" default:"" env:"SLACK_URL"`
+	SlackURL string `short:"s" long:"slack" description:"Slack Webhook URL" default:"" env:"SLACK_URL"`
 	HealthHTTPPort string `short:"p" long:"port" description:"Health check HTTP server port" default:"8080" env:"PORT"`
 
 }
@@ -44,6 +45,9 @@ type PrestoQuery struct {
 	Query string `json:"query"`
 	QueryID string `json:"queryId"`
 	State string `json:"state"`
+	Session struct {
+		User string `json:"user"`
+	} `json:"session"`
 	Inputs []PrestoInput `json:"inputs"`
 }
 type PrestoInput struct {
@@ -55,6 +59,12 @@ type PrestoInput struct {
 type ConnectorInfo struct {
 	PartitionIds []string `json:"partitionIds"`
 	Truncated bool `json:"truncated"`
+}
+
+type ModeQueryInfo struct {
+	User string `json:"user"`
+	URL string `json:"url"`
+	Scheduled bool `json:"scheduled"`
 }
 
 // Internal stat to track last time we polled Presto
@@ -84,18 +94,31 @@ func pingSlack(badInputs []PrestoInput, query PrestoQuery) {
 		ptnCount := len(i.ConnectorInfo.PartitionIds)
 		totalPartitions += ptnCount
 		attachment := slack.Attachment{}
+		var color = "warning"
+		attachment.Color = &color
 		attachment.AddField(slack.Field{Title: "Schema", Value: fmt.Sprintf("%v.%v.%v", i.ConnectorID, i.Schema, i.Table), Short: true})
 		attachment.AddField(slack.Field{Title: "Partitions", Value: fmt.Sprintf("%v", ptnCount), Short: true})
 		attachments = append(attachments, attachment)
 	}
 
-	// TODO: parse query info from Mode and figure out who sent this thing...
-	//queryInfo := slack.Attachment{}
-	//queryInfo.AddField(slack.Field{Title: "Username", Value: query.})
-	//attachments = append(attachments, queryInfo)
+	if query.Session.User == "mode" {
+		var mqi ModeQueryInfo
+		var color = "439FE0"
+		lines := strings.Split(query.Query, "\n")
+		modeTag := lines[len(lines)-1][3:]
+		json.Unmarshal([]byte(modeTag), &mqi)
+		queryInfo := slack.Attachment{}
+		queryInfo.Color = &color
+		queryInfo.AddField(slack.Field{Title: "Mode Username", Value: mqi.User, Short: true})
+		queryInfo.AddField(slack.Field{Title: "Scheduled?", Value: fmt.Sprintf("%v", mqi.Scheduled), Short: true})
+		queryInfo.AddField(slack.Field{Title: "URL", Value: mqi.URL})
+		attachments = append(attachments, queryInfo)
+	}
 
 	payload := slack.Payload {
-		Text: fmt.Sprintf("Presto query <%v/ui/query.html?%v> is searching through more than *%v* partitions total! :bomb: :sql_bandit:\nMake sure your query has a filter for *date* and not *received_at!*", opts.PrestoURL, query.QueryID, totalPartitions),
+		Text: fmt.Sprintf(":bomb: :bomb: :bomb:\nPresto query <%v/ui/query.html?%v> is searching through more than *%v* partitions total! :sql_bandit:\n", opts.PrestoURL, query.QueryID, totalPartitions) +
+			"Make sure your query has a filter for `date` and not `received_at`!\n" +
+			"\n\n*If you want to disable this alert for your query*, add `-- sqlbandit:off` somewhere in your query.",
 		Username: "SQLBandit",
 		Attachments: attachments,
 	}
@@ -115,6 +138,11 @@ func checkQuery(queryStats PrestoQuery) error {
 	// Yeah, silly i know, but whatever.
 	query := queryWrap[0]
 
+	// Let us disable the slack alert per-query
+	if strings.Contains(query.Query, "sqlbandit:off") {
+		return nil
+	}
+
 	shouldPingSlack := false
 
 	var badInputs []PrestoInput
@@ -126,7 +154,7 @@ func checkQuery(queryStats PrestoQuery) error {
 		if len(input.ConnectorInfo.PartitionIds) > maxParts {
 			shouldPingSlack = true
 			badInputs = append(badInputs, input)
-			log.Warningf("Query [%v] Input [%v] Source [%v.%v.%v] has more than %v partitions!", queryStats.QueryID, idx, input.ConnectorID, input.Schema, input.Table, maxParts)
+			log.Warningf("Query [%v] Input [%v] Source [%v.%v.%v] is searching %v partitions!", queryStats.QueryID, idx, input.ConnectorID, input.Schema, input.Table, len(input.ConnectorInfo.PartitionIds))
 		}
 	}
 
