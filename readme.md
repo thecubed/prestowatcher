@@ -1,4 +1,6 @@
 # prestowatcher
+![Slack Alert](slack-screenshot.png?raw=true "Example Alert")
+
 A very simple Slack alerter for [PrestoDB](https://prestodb.io/) queries that are 
 potentially unintentionally resource intensive.
 
