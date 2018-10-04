@@ -32,6 +32,7 @@ var opts struct {
 	Verbose bool `short:"v" long:"verbose" description:"Enable DEBUG logging"`
 	DoVersion bool `short:"V" long:"version" description:"Print version and exit"`
 	PrestoURL string `short:"u" long:"url" description:"presto URL (including scheme and port)" default:"" env:"PRESTO_URL"`
+	PrestoConnector string `short:"c" long:"connector" description:"presto connector name for partitioned tables" default:"hive" env:"PRESTO_CONNECTOR"`
 	MaxPartitions string `short:"m" long:"maxpart" description:"Alert when Presto queries scan more than X partitions" default:"30" env:"MAX_PARTITIONS"`
 	UpdateInterval string `short:"i" long:"interval" description:"Update interval in seconds" default:"20" env:"UPDATE_INTERVAL"`
 	SlackURL string `short:"s" long:"slack" description:"Slack Webhook URL" default:"" env:"SLACK_URL"`
@@ -150,11 +151,16 @@ func checkQuery(queryStats PrestoQuery) error {
 	//log.Debugf("Query: %+v", query)
 	for idx, input := range query.Inputs {
 		log.Debugf("Checking query [%q] input index [%v] partition counts...", queryStats.QueryID, idx)
+		if input.ConnectorID != opts.PrestoConnector {
+			// not a hive query... bail, bail, bail!
+			log.Debugf("Query [%q] input index [%v] connector [%v] != [%v], aborting check of this input index!", queryStats.QueryID, idx, input.ConnectorID, opts.PrestoConnector)
+			return nil
+		}
 		log.Debugf("Partitions: %v", input.ConnectorInfo.PartitionIds)
 		if len(input.ConnectorInfo.PartitionIds) > maxParts {
 			shouldPingSlack = true
 			badInputs = append(badInputs, input)
-			log.Warningf("Query [%v] Input [%v] Source [%v.%v.%v] is searching %v partitions!", queryStats.QueryID, idx, input.ConnectorID, input.Schema, input.Table, len(input.ConnectorInfo.PartitionIds))
+			log.Warningf("Query [%v] Input [%v] Source [%v.%v.%v] is searching [%v] partitions!", queryStats.QueryID, idx, input.ConnectorID, input.Schema, input.Table, len(input.ConnectorInfo.PartitionIds))
 		}
 	}
 
