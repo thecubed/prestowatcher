@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"github.com/bluele/gcache"
 	"strings"
+	"github.com/armon/go-metrics/datadog"
+	"github.com/armon/go-metrics"
 )
 
 /*
@@ -37,6 +39,7 @@ var opts struct {
 	UpdateInterval string `short:"i" long:"interval" description:"Update interval in seconds" default:"20" env:"UPDATE_INTERVAL"`
 	SlackURL string `short:"s" long:"slack" description:"Slack Webhook URL" default:"" env:"SLACK_URL"`
 	HealthHTTPPort string `short:"p" long:"port" description:"Health check HTTP server port" default:"8080" env:"PORT"`
+	StatsdHost string `long:"statsd" description:"StatsD ( host:port )" default:"127.0.0.1" env:"STATSD_HOST"`
 
 }
 
@@ -68,6 +71,8 @@ type ModeQueryInfo struct {
 	Scheduled bool `json:"scheduled"`
 }
 
+// Metrics sink
+var metricsSink *datadog.DogStatsdSink
 // Internal stat to track last time we polled Presto
 var lastUpdate int64
 // Converted version of the UpdateInterval
@@ -157,10 +162,40 @@ func checkQuery(queryStats PrestoQuery) error {
 			return nil
 		}
 		log.Debugf("Partitions: %v", input.ConnectorInfo.PartitionIds)
+
+		// emit partition names to datadog
+		for _, ptn := range input.ConnectorInfo.PartitionIds {
+			log.Debugf("Emit StatsD message for table: [%v.%v.%v] Partition: [%v]", input.ConnectorID, input.Schema, input.Table, ptn)
+			metricsSink.IncrCounterWithLabels(
+				[]string{"presto", "watcher", "queried_partitions",},
+				1.0,
+				[]metrics.Label{
+					{
+						Name: "table",
+						Value: fmt.Sprintf("%s.%s.%s", input.ConnectorID, input.Schema, input.Table),
+					},
+					{
+						Name: "partition",
+						Value: ptn,
+					},
+				},
+			)
+		}
+
 		if len(input.ConnectorInfo.PartitionIds) > maxParts {
 			shouldPingSlack = true
 			badInputs = append(badInputs, input)
 			log.Warningf("Query [%v] Input [%v] Source [%v.%v.%v] is searching [%v] partitions!", queryStats.QueryID, idx, input.ConnectorID, input.Schema, input.Table, len(input.ConnectorInfo.PartitionIds))
+			metricsSink.IncrCounterWithLabels(
+				[]string{"presto", "watcher", "query_partition_counts"},
+				float32(len(input.ConnectorInfo.PartitionIds)),
+				[]metrics.Label{
+					{
+						Name: "table",
+						Value: fmt.Sprintf("%s.%s.%s", input.ConnectorID, input.Schema, input.Table),
+					},
+				},
+			)
 		}
 	}
 
@@ -238,6 +273,13 @@ func doCollect() bool {
 }
 
 func startCollector() {
+	var e error
+	metricsSink, e = datadog.NewDogStatsdSink(opts.StatsdHost, "")
+	if e != nil || metricsSink==nil {
+		log.Fatalf("Unable to start statsd sink. Addr: [%v], Error: [%v]", opts.StatsdHost, e.Error())
+		os.Exit(-1)
+	}
+
 	ticker := time.NewTicker(delay * time.Second)
 	quit := make(chan struct{})
 
